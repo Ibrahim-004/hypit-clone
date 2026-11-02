@@ -5,10 +5,20 @@ import { verifyRefreshToken, signAccessToken, signRefreshToken } from '../servic
 import { env } from '../config/env';
 import { unauthorized } from '../utils/errors';
 
-const cookieOptions = {
+// Production frontend and API live on different vercel.app hosts, which
+// browsers treat as cross-site, so a lax refresh cookie would not be sent
+// on cross-site fetches. In production use sameSite none (with secure,
+// already set above); locally keep lax.
+const cookieOptions: {
+  httpOnly: boolean;
+  secure: boolean;
+  sameSite: 'lax' | 'none';
+  path: string;
+  maxAge: number;
+} = {
   httpOnly: true,
   secure: env.NODE_ENV === 'production',
-  sameSite: 'lax' as const,
+  sameSite: env.NODE_ENV === 'production' ? 'none' : 'lax',
   path: '/api/v1/auth',
   maxAge: 7 * 24 * 60 * 60 * 1000,
 };
@@ -38,7 +48,12 @@ export function makeAuthController(db: Db) {
       res.json({ accessToken: signAccessToken(userId) });
     },
     async logout(_req: Request, res: Response): Promise<void> {
-      res.clearCookie('refreshToken', { path: '/api/v1/auth' });
+      res.clearCookie('refreshToken', {
+        httpOnly: cookieOptions.httpOnly,
+        secure: cookieOptions.secure,
+        sameSite: cookieOptions.sameSite,
+        path: cookieOptions.path,
+      });
       res.status(204).send();
     },
   };
