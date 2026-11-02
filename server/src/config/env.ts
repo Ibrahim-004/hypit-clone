@@ -9,6 +9,9 @@ const envSchema = z.object({
   CLIENT_URL: z.string().min(1).default('http://localhost:5173'),
   ANTHROPIC_API_KEY: z.string().optional(),
   ANTHROPIC_MODEL: z.string().default('claude-3-5-sonnet-20241022'),
+  AI_API_KEY: z.string().optional(),
+  AI_API_BASE_URL: z.string().optional(),
+  AI_MODEL: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
