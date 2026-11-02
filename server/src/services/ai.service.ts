@@ -105,7 +105,11 @@ export class OpenAiCompatibleClient implements AiClient {
       if (response.status === 429) {
         throw new ApiError(502, 'AI_INVALID_OUTPUT', `AI provider rate limit: ${detail.slice(0, 200)}`);
       }
-      throw new ApiError(502, 'AI_INVALID_OUTPUT', `AI provider error ${response.status}`);
+      throw new ApiError(
+        502,
+        'AI_INVALID_OUTPUT',
+        `AI provider error ${response.status} at ${baseUrl} model ${this.config.model}: ${detail.slice(0, 200)}`,
+      );
     }
     const data = (await response.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
