@@ -12,6 +12,12 @@ const envSchema = z.object({
   AI_API_KEY: z.string().optional(),
   AI_API_BASE_URL: z.string().optional(),
   AI_MODEL: z.string().optional(),
+  AI2_API_KEY: z.string().optional(),
+  AI2_API_BASE_URL: z.string().optional(),
+  AI2_MODEL: z.string().optional(),
+  AI3_API_KEY: z.string().optional(),
+  AI3_API_BASE_URL: z.string().optional(),
+  AI3_MODEL: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);

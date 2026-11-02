@@ -58,22 +58,38 @@ function parseJsonArray(text: string): unknown {
  * point at the provider chat completions root, for example
  * https://openrouter.ai/api/v1 or https://api.groq.com/openai/v1
  */
+export interface OpenAiProviderConfig {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+}
+
 export class OpenAiCompatibleClient implements AiClient {
+  private readonly config: OpenAiProviderConfig;
+
+  constructor(config?: OpenAiProviderConfig) {
+    this.config = config ?? {
+      apiKey: env.AI_API_KEY ?? '',
+      baseUrl: env.AI_API_BASE_URL ?? 'https://openrouter.ai/api/v1',
+      model: env.AI_MODEL ?? '',
+    };
+  }
+
   async generateRaw(prompt: string): Promise<unknown> {
-    if (!env.AI_API_KEY || !env.AI_MODEL) {
+    if (!this.config.apiKey || !this.config.model) {
       throw new ApiError(503, 'AI_UNAVAILABLE', 'AI generation is not configured on this server');
     }
-    const baseUrl = (env.AI_API_BASE_URL ?? 'https://openrouter.ai/api/v1').replace(/\/$/, '');
+    const baseUrl = this.config.baseUrl.replace(/\/$/, '');
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${env.AI_API_KEY}`,
+        Authorization: `Bearer ${this.config.apiKey}`,
         'HTTP-Referer': 'https://hypit-clone.vercel.app',
         'X-Title': 'Hypit-style',
       },
       body: JSON.stringify({
-        model: env.AI_MODEL,
+        model: this.config.model,
         max_tokens: 2048,
         messages: [
           { role: 'system', content: SCENE_SYSTEM_PROMPT },
@@ -100,9 +116,53 @@ export class OpenAiCompatibleClient implements AiClient {
   }
 }
 
-/** Prefer the free OpenAI compatible provider when it is configured, otherwise Anthropic. */
+/**
+ * Tries each configured provider in order. When one is rate limited,
+ * rejects the key, or returns unusable output, the next provider is
+ * tried immediately, so a free tier limit on one provider does not
+ * block generation while another free provider still has quota.
+ */
+export class MultiProviderClient implements AiClient {
+  private readonly providers: AiClient[];
+
+  constructor(providers: AiClient[]) {
+    this.providers = providers;
+  }
+
+  async generateRaw(prompt: string): Promise<unknown> {
+    let lastError: unknown = null;
+    for (const provider of this.providers) {
+      try {
+        return await provider.generateRaw(prompt);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError) throw lastError;
+    throw new ApiError(503, 'AI_UNAVAILABLE', 'AI generation is not configured on this server');
+  }
+}
+
+/** Prefer the free OpenAI compatible providers when configured, otherwise Anthropic. */
 export function createAiClient(): AiClient {
-  if (env.AI_API_KEY) return new OpenAiCompatibleClient();
+  const providers: AiClient[] = [];
+  const groups: Array<{ key?: string; baseUrl?: string; model?: string }> = [
+    { key: env.AI_API_KEY, baseUrl: env.AI_API_BASE_URL, model: env.AI_MODEL },
+    { key: env.AI2_API_KEY, baseUrl: env.AI2_API_BASE_URL, model: env.AI2_MODEL },
+    { key: env.AI3_API_KEY, baseUrl: env.AI3_API_BASE_URL, model: env.AI3_MODEL },
+  ];
+  for (const group of groups) {
+    if (group.key && group.model) {
+      providers.push(
+        new OpenAiCompatibleClient({
+          apiKey: group.key,
+          baseUrl: group.baseUrl ?? 'https://openrouter.ai/api/v1',
+          model: group.model,
+        }),
+      );
+    }
+  }
+  if (providers.length > 0) return new MultiProviderClient(providers);
   return new AnthropicAiClient();
 }
 
