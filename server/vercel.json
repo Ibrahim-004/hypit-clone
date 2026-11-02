@@ -2,6 +2,7 @@
   "buildCommand": "npx prisma generate && npx prisma migrate deploy && npx tsc -p tsconfig.json",
   "installCommand": "npm install --include=dev",
   "framework": null,
+  "outputDirectory": "public",
   "functions": {
     "api/[...path].ts": {
       "maxDuration": 30
