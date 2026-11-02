@@ -150,6 +150,7 @@ export function createAiClient(): AiClient {
     { key: env.AI_API_KEY, baseUrl: env.AI_API_BASE_URL, model: env.AI_MODEL },
     { key: env.AI2_API_KEY, baseUrl: env.AI2_API_BASE_URL, model: env.AI2_MODEL },
     { key: env.AI3_API_KEY, baseUrl: env.AI3_API_BASE_URL, model: env.AI3_MODEL },
+    { key: env.AI4_API_KEY, baseUrl: env.AI4_API_BASE_URL, model: env.AI4_MODEL },
   ];
   for (const group of groups) {
     if (group.key && group.model) {
