@@ -21,6 +21,9 @@ const envSchema = z.object({
   AI4_API_KEY: z.string().optional(),
   AI4_API_BASE_URL: z.string().optional(),
   AI4_MODEL: z.string().optional(),
+  AI5_API_KEY: z.string().optional(),
+  AI5_API_BASE_URL: z.string().optional(),
+  AI5_MODEL: z.string().optional(),
 });
 
 const parsed = envSchema.safeParse(process.env);
