@@ -4,15 +4,30 @@ import { ApiError } from '../utils/errors';
 import { generatedScenesSchema, type GeneratedScene } from '../validation/schemas';
 
 export interface AiClient {
-  generateRaw: (prompt: string) => Promise<unknown>;
+  generateRaw: (prompt: string, deadlineMs?: number) => Promise<unknown>;
+}
+
+function timeoutMsFor(deadlineMs: number | undefined, fallbackMs: number): number {
+  if (deadlineMs === undefined) return fallbackMs;
+  return Math.min(fallbackMs, deadlineMs - Date.now());
+}
+
+function timeoutError(timeoutMs: number, where: string): ApiError {
+  return new ApiError(
+    502,
+    'AI_INVALID_OUTPUT',
+    `AI provider timed out after ${timeoutMs} ms at ${where}`,
+  );
 }
 
 export class AnthropicAiClient implements AiClient {
-  async generateRaw(prompt: string): Promise<unknown> {
+  async generateRaw(prompt: string, deadlineMs?: number): Promise<unknown> {
     if (!env.ANTHROPIC_API_KEY) {
       throw new ApiError(503, 'AI_UNAVAILABLE', 'AI generation is not configured on this server');
     }
-    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY });
+    const timeoutMs = timeoutMsFor(deadlineMs, env.AI_PROVIDER_TIMEOUT_MS);
+    if (timeoutMs <= 0) throw timeoutError(env.AI_PROVIDER_TIMEOUT_MS, 'Anthropic');
+    const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, timeout: timeoutMs });
     const response = await client.messages.create({
       model: env.ANTHROPIC_MODEL,
       max_tokens: 2048,
@@ -62,6 +77,7 @@ export interface OpenAiProviderConfig {
   apiKey: string;
   baseUrl: string;
   model: string;
+  timeoutMs?: number;
 }
 
 export class OpenAiCompatibleClient implements AiClient {
@@ -75,28 +91,39 @@ export class OpenAiCompatibleClient implements AiClient {
     };
   }
 
-  async generateRaw(prompt: string): Promise<unknown> {
+  async generateRaw(prompt: string, deadlineMs?: number): Promise<unknown> {
     if (!this.config.apiKey || !this.config.model) {
       throw new ApiError(503, 'AI_UNAVAILABLE', 'AI generation is not configured on this server');
     }
     const baseUrl = this.config.baseUrl.replace(/\/$/, '');
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.config.apiKey}`,
-        'HTTP-Referer': 'https://hypit-clone.vercel.app',
-        'X-Title': 'Hypit-style',
-      },
-      body: JSON.stringify({
-        model: this.config.model,
-        max_tokens: 2048,
-        messages: [
-          { role: 'system', content: SCENE_SYSTEM_PROMPT },
-          { role: 'user', content: prompt },
-        ],
-      }),
-    });
+    const timeoutMs = timeoutMsFor(deadlineMs, this.config.timeoutMs ?? env.AI_PROVIDER_TIMEOUT_MS);
+    if (timeoutMs <= 0) throw timeoutError(this.config.timeoutMs ?? env.AI_PROVIDER_TIMEOUT_MS, baseUrl);
+    let response: Response;
+    try {
+      response = await fetch(`${baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.config.apiKey}`,
+          'HTTP-Referer': 'https://hypit-clone.vercel.app',
+          'X-Title': 'Hypit-style',
+        },
+        signal: AbortSignal.timeout(timeoutMs),
+        body: JSON.stringify({
+          model: this.config.model,
+          max_tokens: 2048,
+          messages: [
+            { role: 'system', content: SCENE_SYSTEM_PROMPT },
+            { role: 'user', content: prompt },
+          ],
+        }),
+      });
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError')) {
+        throw timeoutError(timeoutMs, `${baseUrl} model ${this.config.model}`);
+      }
+      throw error;
+    }
     if (!response.ok) {
       const detail = await response.text().catch(() => '');
       if (response.status === 401 || response.status === 403) {
@@ -133,11 +160,12 @@ export class MultiProviderClient implements AiClient {
     this.providers = providers;
   }
 
-  async generateRaw(prompt: string): Promise<unknown> {
+  async generateRaw(prompt: string, deadlineMs?: number): Promise<unknown> {
     let lastError: unknown = null;
     for (const provider of this.providers) {
+      if (deadlineMs !== undefined && Date.now() >= deadlineMs) break;
       try {
-        return await provider.generateRaw(prompt);
+        return await provider.generateRaw(prompt, deadlineMs);
       } catch (error) {
         lastError = error;
       }
@@ -173,10 +201,17 @@ export function createAiClient(): AiClient {
 }
 
 export async function generateScenes(ai: AiClient, prompt: string): Promise<GeneratedScene[]> {
+  // One shared deadline for the whole generation, including the single
+  // retry below, so slow providers cannot add up past the 30 second
+  // Vercel function limit and turn into an empty 504. Each provider is
+  // also capped individually (see OpenAiCompatibleClient), so a slow
+  // provider fails fast with a 502 and the next provider still gets a
+  // chance inside the same budget.
+  const deadlineMs = Date.now() + env.AI_GENERATION_TIMEOUT_MS;
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      const raw = await ai.generateRaw(prompt);
+      const raw = await ai.generateRaw(prompt, deadlineMs);
       const parsed = generatedScenesSchema.safeParse(raw);
       if (!parsed.success) throw new Error('Schema validation failed');
       return parsed.data;
